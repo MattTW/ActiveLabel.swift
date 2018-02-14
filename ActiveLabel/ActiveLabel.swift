@@ -51,6 +51,9 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
     open var customSelectedColor: [ActiveType : UIColor] = [:] {
         didSet { updateTextStorage(parseText: false) }
     }
+    open var customUnderLineStyle: [ActiveType : NSUnderlineStyle] = [:] {
+        didSet { updateTextStorage(parseText: false) }
+    }
     @IBInspectable public var lineSpacing: CGFloat = 0 {
         didSet { updateTextStorage(parseText: false) }
     }
@@ -319,7 +322,10 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             case .mention: attributes[NSAttributedStringKey.foregroundColor] = mentionColor
             case .hashtag: attributes[NSAttributedStringKey.foregroundColor] = hashtagColor
             case .url: attributes[NSAttributedStringKey.foregroundColor] = URLColor
-            case .custom: attributes[NSAttributedStringKey.foregroundColor] = customColor[type] ?? defaultCustomColor
+	    case .custom:
+                attributes[NSForegroundColorAttributeName] = customColor[type] ?? defaultCustomColor
+                attributes[NSUnderlineStyleAttributeName] = customUnderLineStyle[type]?.rawValue ?? NSUnderlineStyle.styleNone.rawValue
+              }
             }
             
             if let highlightFont = hightlightFont {
