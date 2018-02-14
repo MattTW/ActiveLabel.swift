@@ -275,14 +275,15 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
 
         if parseText {
             clearActiveElements()
-            let newString = parseTextAndExtractActiveElements(mutAttrString)
-            mutAttrString.mutableString.setString(newString)
+            //let newString = parseTextAndExtractActiveElements(mutAttrString)
+            //mutAttrString.mutableString.setString(newString)
+	    parseTextAndExtractActiveElements(mutAttrString)
         }
 
         addLinkAttribute(mutAttrString)
         textStorage.setAttributedString(mutAttrString)
         _customizing = true
-        text = mutAttrString.string
+        //text = mutAttrString.string
         _customizing = false
         setNeedsDisplay()
     }
