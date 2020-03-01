@@ -10,7 +10,8 @@ import Foundation
 import UIKit
 
 public protocol ActiveLabelDelegate: class {
-    func didSelect(_ text: String, type: ActiveType)
+    func didSelect(_ text: String, type: ActiveType, range: NSRange)
+    func didLongTap(_ text: String, type: ActiveType, range: NSRange)
 }
 
 public typealias ConfigureLinkAttribute = (ActiveType, [NSAttributedStringKey : Any], Bool) -> ([NSAttributedStringKey : Any])
@@ -26,6 +27,8 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
     open var urlMaximumLength: Int?
     
     open var configureLinkAttribute: ConfigureLinkAttribute?
+    
+    open var fuzzyHeightMatching: Bool = false
 
     @IBInspectable open var mentionColor: UIColor = .blue {
         didSet { updateTextStorage(parseText: false) }
@@ -74,20 +77,24 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
     }
 
     // MARK: - public methods
-    open func handleMentionTap(_ handler: @escaping (String) -> ()) {
+    open func handleMentionTap(_ handler: @escaping (String, NSRange) -> ()) {
         mentionTapHandler = handler
     }
 
-    open func handleHashtagTap(_ handler: @escaping (String) -> ()) {
+    open func handleHashtagTap(_ handler: @escaping (String, NSRange) -> ()) {
         hashtagTapHandler = handler
     }
     
-    open func handleURLTap(_ handler: @escaping (URL) -> ()) {
+    open func handleURLTap(_ handler: @escaping (URL, NSRange) -> ()) {
         urlTapHandler = handler
     }
 
-    open func handleCustomTap(for type: ActiveType, handler: @escaping (String) -> ()) {
+    open func handleCustomTap(for type: ActiveType, handler: @escaping (String, NSRange) -> ()) {
         customTapHandlers[type] = handler
+    }
+
+    open func handleCustomLongTap(for type: ActiveType, handler: @escaping (String, NSRange) -> ()) {
+        customLongTapHandlers[type] = handler
     }
 	
     open func removeHandle(for type: ActiveType) {
@@ -98,9 +105,16 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             mentionTapHandler = nil
         case .url:
             urlTapHandler = nil
-        case .custom:
+        case .custom, .customRange:
             customTapHandlers[type] = nil
         }
+    }
+
+    open func removeAllHanders() {
+        hashtagTapHandler = nil
+        mentionTapHandler = nil
+        urlTapHandler = nil
+        customTapHandlers = [:]
     }
 
     open func filterMention(_ predicate: @escaping (String) -> Bool) {
@@ -195,6 +209,22 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
         let location = touch.location(in: self)
         var avoidSuperCall = false
 
+        // Manage long tap timer
+        if touch.phase == .began {
+            beginLongTapTimer(location: location)
+        } else if touch.phase != .moved {
+            endLongTapTimer()
+        }
+
+        // Avoid simultaneous detection of regular tap and long tap:
+        // If we have already detected a long tap, reset it and don't allow this touch to be detected as a regular tap
+        // Else we will see regular tap behavior as soon as user lifts up the finger after a long tap
+        if hasDetectedLongTap {
+            return false
+        }
+
+        // Manage regular tap
+
         switch touch.phase {
         case .began, .moved:
             if let element = element(at: location) {
@@ -212,10 +242,10 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             guard let selectedElement = selectedElement else { return avoidSuperCall }
 
             switch selectedElement.element {
-            case .mention(let userHandle): didTapMention(userHandle)
-            case .hashtag(let hashtag): didTapHashtag(hashtag)
-            case .url(let originalURL, _): didTapStringURL(originalURL)
-            case .custom(let element): didTap(element, for: selectedElement.type)
+            case .mention(let userHandle): didTapMention(userHandle, range: selectedElement.range)
+            case .hashtag(let hashtag): didTapHashtag(hashtag, range: selectedElement.range)
+            case .url(let originalURL, _): didTapStringURL(originalURL, range: selectedElement.range)
+            case .custom(let element): didTap(element, for: selectedElement.type, range: selectedElement.range)
             }
             
             let when = DispatchTime.now() + Double(Int64(0.25 * Double(NSEC_PER_SEC))) / Double(NSEC_PER_SEC)
@@ -234,14 +264,45 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
         return avoidSuperCall
     }
 
+    override open func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        var hitFrame = self.bounds
+        if fuzzyHeightMatching {
+            let hitTestEdgeInsets = UIEdgeInsets(top: -heightCorrection, left: 0, bottom: -heightCorrection, right: 0)
+            hitFrame = UIEdgeInsetsInsetRect(hitFrame, hitTestEdgeInsets)
+        }
+        return hitFrame.contains(point)
+    }
+
+    // MARK: - Long tap handling
+    private func beginLongTapTimer(location: CGPoint) {
+        hasDetectedLongTap = false
+        longTapLocation = location
+        longTapTimer = Timer.scheduledTimer(timeInterval: 0.25, target: self, selector: #selector(fireLongTapEvent), userInfo: nil, repeats: false)
+    }
+
+    private func endLongTapTimer() {
+        longTapTimer?.invalidate()
+        longTapTimer = nil
+    }
+
+    @objc private func fireLongTapEvent() {
+        if let location = longTapLocation,
+            let selectedElement = element(at: location),
+            case let .custom(string) = selectedElement.element {
+            hasDetectedLongTap = true
+            didLongTap(string, for: selectedElement.type, range: selectedElement.range)
+        }
+    }
+
     // MARK: - private properties
     fileprivate var _customizing: Bool = true
     fileprivate var defaultCustomColor: UIColor = .black
     
-    internal var mentionTapHandler: ((String) -> ())?
-    internal var hashtagTapHandler: ((String) -> ())?
-    internal var urlTapHandler: ((URL) -> ())?
-    internal var customTapHandlers: [ActiveType : ((String) -> ())] = [:]
+    internal var mentionTapHandler: ((String, NSRange) -> ())?
+    internal var hashtagTapHandler: ((String, NSRange) -> ())?
+    internal var urlTapHandler: ((URL, NSRange) -> ())?
+    internal var customTapHandlers: [ActiveType : ((String, NSRange) -> ())] = [:]
+    internal var customLongTapHandlers: [ActiveType : ((String, NSRange) -> ())] = [:]
     
     fileprivate var mentionFilterPredicate: ((String) -> Bool)?
     fileprivate var hashtagFilterPredicate: ((String) -> Bool)?
@@ -252,6 +313,10 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
     fileprivate lazy var layoutManager = NSLayoutManager()
     fileprivate lazy var textContainer = NSTextContainer()
     lazy var activeElements = [ActiveType: [ElementTuple]]()
+
+    var longTapTimer: Timer?
+    var longTapLocation: CGPoint?
+    var hasDetectedLongTap: Bool = false
 
     // MARK: - helper functions
     
@@ -274,19 +339,37 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             return
         }
 
-        let mutAttrString = addLineBreak(attributedText)
+        let mutAttrString = NSMutableAttributedString(attributedString: addLineBreak(attributedText))
+
+        // If the string changes in length, then we need to reset the string (because the attributes have changed indexes)
+        // Otherwise, we can use the attributed string as is
+        var removeAttributes = false
 
         if parseText {
             clearActiveElements()
+<<<<<<< HEAD
             //let newString = parseTextAndExtractActiveElements(mutAttrString)
             //mutAttrString.mutableString.setString(newString)
 	    parseTextAndExtractActiveElements(mutAttrString)
+=======
+            let newString = parseTextAndExtractActiveElements(mutAttrString)
+            if newString.count != mutAttrString.string.count {
+                mutAttrString.mutableString.setString(newString)
+                removeAttributes = true
+            }
+>>>>>>> 6defc181128de97451c9b48d18753130451d2ca2
         }
 
         addLinkAttribute(mutAttrString)
         textStorage.setAttributedString(mutAttrString)
         _customizing = true
+<<<<<<< HEAD
         //text = mutAttrString.string
+=======
+        if removeAttributes {
+            text = mutAttrString.string
+        }
+>>>>>>> 6defc181128de97451c9b48d18753130451d2ca2
         _customizing = false
         setNeedsDisplay()
     }
@@ -322,10 +405,14 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             case .mention: attributes[NSAttributedStringKey.foregroundColor] = mentionColor
             case .hashtag: attributes[NSAttributedStringKey.foregroundColor] = hashtagColor
             case .url: attributes[NSAttributedStringKey.foregroundColor] = URLColor
+<<<<<<< HEAD
 	    case .custom:
                 attributes[NSForegroundColorAttributeName] = customColor[type] ?? defaultCustomColor
                 attributes[NSUnderlineStyleAttributeName] = customUnderLineStyle[type]?.rawValue ?? NSUnderlineStyle.styleNone.rawValue
               }
+=======
+            case .custom, .customRange: attributes[NSAttributedStringKey.foregroundColor] = customColor[type] ?? defaultCustomColor
+>>>>>>> 6defc181128de97451c9b48d18753130451d2ca2
             }
             
             if let highlightFont = hightlightFont {
@@ -349,7 +436,7 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
         var textRange = NSRange(location: 0, length: textLength)
 
         if enabledTypes.contains(.url) {
-            let tuple = ActiveBuilder.createURLElements(from: textString, range: textRange, maximumLenght: urlMaximumLength)
+            let tuple = ActiveBuilder.createURLElements(from: textString, range: textRange, maximumLength: urlMaximumLength)
             let urlElements = tuple.0
             let finalText = tuple.1
             textString = finalText
@@ -405,7 +492,7 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             case .mention: selectedColor = mentionSelectedColor ?? mentionColor
             case .hashtag: selectedColor = hashtagSelectedColor ?? hashtagColor
             case .url: selectedColor = URLSelectedColor ?? URLColor
-            case .custom:
+            case .custom, .customRange:
                 let possibleSelectedColor = customSelectedColor[selectedElement.type] ?? customColor[selectedElement.type]
                 selectedColor = possibleSelectedColor ?? defaultCustomColor
             }
@@ -416,7 +503,7 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
             case .mention: unselectedColor = mentionColor
             case .hashtag: unselectedColor = hashtagColor
             case .url: unselectedColor = URLColor
-            case .custom: unselectedColor = customColor[selectedElement.type] ?? defaultCustomColor
+            case .custom, .customRange: unselectedColor = customColor[selectedElement.type] ?? defaultCustomColor
             }
             attributes[NSAttributedStringKey.foregroundColor] = unselectedColor
         }
@@ -440,12 +527,24 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
         }
 
         var correctLocation = location
-        correctLocation.y -= heightCorrection
-        let boundingRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: 0, length: textStorage.length), in: textContainer)
+        var boundingRect = layoutManager.boundingRect(forGlyphRange: NSRange(location: 0, length: textStorage.length), in: textContainer)
+        
+        if fuzzyHeightMatching {
+            boundingRect = boundingRect.insetBy(dx: 0, dy: -heightCorrection)
+        } else {
+            correctLocation.y -= heightCorrection
+        }
+        
+        // Compare our touch location to the full height of the view
         guard boundingRect.contains(correctLocation) else {
             return nil
         }
 
+        // Now that we've used the full heigt, figure out where the touch occured using the correct height
+        if fuzzyHeightMatching {
+            correctLocation.y -= heightCorrection
+        }
+        
         let index = layoutManager.glyphIndex(for: correctLocation, in: textContainer)
         
         for element in activeElements.map({ $0.1 }).joined() {
@@ -484,36 +583,44 @@ typealias ElementTuple = (range: NSRange, element: ActiveElement, type: ActiveTy
     }
 
     //MARK: - ActiveLabel handler
-    fileprivate func didTapMention(_ username: String) {
+    fileprivate func didTapMention(_ username: String, range: NSRange) {
         guard let mentionHandler = mentionTapHandler else {
-            delegate?.didSelect(username, type: .mention)
+            delegate?.didSelect(username, type: .mention, range: range)
             return
         }
-        mentionHandler(username)
+        mentionHandler(username, range)
     }
 
-    fileprivate func didTapHashtag(_ hashtag: String) {
+    fileprivate func didTapHashtag(_ hashtag: String, range: NSRange) {
         guard let hashtagHandler = hashtagTapHandler else {
-            delegate?.didSelect(hashtag, type: .hashtag)
+            delegate?.didSelect(hashtag, type: .hashtag, range: range)
             return
         }
-        hashtagHandler(hashtag)
+        hashtagHandler(hashtag, range)
     }
 
-    fileprivate func didTapStringURL(_ stringURL: String) {
+    fileprivate func didTapStringURL(_ stringURL: String, range: NSRange) {
         guard let urlHandler = urlTapHandler, let url = URL(string: stringURL) else {
-            delegate?.didSelect(stringURL, type: .url)
+            delegate?.didSelect(stringURL, type: .url, range: range)
             return
         }
-        urlHandler(url)
+        urlHandler(url, range)
     }
 
-    fileprivate func didTap(_ element: String, for type: ActiveType) {
+    fileprivate func didTap(_ element: String, for type: ActiveType, range: NSRange) {
         guard let elementHandler = customTapHandlers[type] else {
-            delegate?.didSelect(element, type: type)
+            delegate?.didSelect(element, type: type, range: range)
             return
         }
-        elementHandler(element)
+        elementHandler(element, range)
+    }
+
+    fileprivate func didLongTap(_ element: String, for type: ActiveType, range: NSRange) {
+        guard let elementHandler = customLongTapHandlers[type] else {
+            delegate?.didLongTap(element, type: type, range: range)
+            return
+        }
+        elementHandler(element, range)
     }
 }
 

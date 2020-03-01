@@ -20,10 +20,12 @@ struct ActiveBuilder {
             return createElements(from: text, for: type, range: range, filterPredicate: filterPredicate)
         case .custom:
             return createElements(from: text, for: type, range: range, minLength: 1, filterPredicate: filterPredicate)
+        case .customRange:
+            return createElements(from: text, for: type, range: range, filterPredicate: filterPredicate)
         }
     }
 
-    static func createURLElements(from text: String, range: NSRange, maximumLenght: Int?) -> ([ElementTuple], String) {
+    static func createURLElements(from text: String, range: NSRange, maximumLength: Int?) -> ([ElementTuple], String) {
         let type = ActiveType.url
         var text = text
         let matches = RegexParser.getElements(from: text, with: type.pattern, range: range)
@@ -34,14 +36,14 @@ struct ActiveBuilder {
             let word = nsstring.substring(with: match.range)
                 .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
 
-            guard let maxLenght = maximumLenght, word.characters.count > maxLenght else {
-                let range = maximumLenght == nil ? match.range : (text as NSString).range(of: word)
+            guard let maxLength = maximumLength, word.count > maxLength else {
+                let range = maximumLength == nil ? match.range : (text as NSString).range(of: word)
                 let element = ActiveElement.create(with: type, text: word)
                 elements.append((range, element, type))
                 continue
             }
 
-            let trimmedWord = word.trim(to: maxLenght)
+            let trimmedWord = word.trim(to: maxLength)
             text = text.replacingOccurrences(of: word, with: trimmedWord)
 
             let newRange = (text as NSString).range(of: trimmedWord)
@@ -56,7 +58,21 @@ struct ActiveBuilder {
                                                 range: NSRange,
                                                 minLength: Int = 2,
                                                 filterPredicate: ActiveFilterPredicate?) -> [ElementTuple] {
+        switch type {
+        case .customRange(let range):
+            let string = text as NSString
+            if range.location + range.length <= string.length {
+                let substring = string.substring(with: range)
+                return [(range, ActiveElement.create(with: type, text: substring), type)]
+            } else {
+                return []
+            }
+        default:
+            let matches = RegexParser.getElements(from: text, with: type.pattern, range: range)
+            let nsstring = text as NSString
+            var elements: [ElementTuple] = []
 
+<<<<<<< HEAD
         let matches = RegexParser.getElements(from: text, with: type.pattern, range: range)
         let nsstring = text as NSString
         var elements: [ElementTuple] = []
@@ -71,9 +87,18 @@ struct ActiveBuilder {
             if filterPredicate?(word) ?? true {
                 let element = ActiveElement.create(with: type, text: word)
                 elements.append((match.range, element, type))
+=======
+            for match in matches where match.range.length > minLength {
+                let word = nsstring.substring(with: match.range)
+                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if filterPredicate?(word) ?? true {
+                    let element = ActiveElement.create(with: type, text: word)
+                    elements.append((match.range, element, type))
+                }
+>>>>>>> 6defc181128de97451c9b48d18753130451d2ca2
             }
+            return elements
         }
-        return elements
     }
 
     private static func createElementsIgnoringFirstCharacter(from text: String,
